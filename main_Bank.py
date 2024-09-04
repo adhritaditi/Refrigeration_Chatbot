@@ -81,7 +81,7 @@ async def chat(websocket: WebSocket):
         trimmed_chat_log = trim_chat_log(chat_log)
  
         try:
-response = openai.chat.completions.create(
+            response = openai.chat.completions.create(
                 model='gpt-3.5-turbo',
                 messages=trimmed_chat_log,
                 temperature=0.6,
@@ -111,7 +111,7 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     # Trim the chat log to avoid exceeding the context length
     trimmed_chat_log = trim_chat_log(chat_log)
  
-response = openai.chat.completions.create(
+    response = openai.chat.completions.create(
         model='gpt-4',
         messages=trimmed_chat_log,
         temperature=0.6

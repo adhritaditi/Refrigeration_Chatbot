@@ -1,77 +1,174 @@
 {% include 'layout.html' %}
-
+ 
 <div class="container mt-5">
-  <h3>
+  <!-- Logo section positioned in the top-right corner -->
+  <div style="position: absolute; top: 20px; right: 20px;">
+    <img src="Logo.jpg" alt="Logo">
+  </div>
+ 
+  <h3 class="text-center">
     Add input to chat with personal chatbot
   </h3>
-
+ 
   <div>
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <button class="btn btn-outline-secondary" type="button" id="newChatButton">New Chat</button>
+      <select id="chatSessionSelector" class="form-select w-auto">
+        <option value="" disabled selected>Select a chat session</option>
+      </select>
+    </div>
+ 
     <div class="card text-center mt-3">
       <div class="card-header">
         Chat History:
       </div>
       <div class="card-body chat-history" id="chatHistory">
-        <!-- auto populate here -->
-        {% for response in chat_responses %}
-
-        <div class="{{ 'chat-message user-input' if loop.index0 is even else 'chat-message ai-response' }}">
-          {{ response }}
-        </div>
-        {% endfor %}
+        <!-- Chat history will be loaded here -->
       </div>
     </div>
   </div>
-
+ 
   <div class="container" id="footer">
     <div class="input-group mb-3">
       <input class="form-control" placeholder="Add input here" id="userInput">
       <button class="btn btn-outline-primary" type="button" id="sendButton">Send</button>
     </div>
   </div>
-
 </div>
-
+ 
 <script>
-
   var websocketString = '';
-  if (window.location.hostname === '127.0.0.1') {
+if (window.location.hostname === '127.0.0.1') {
     websocketString = "ws://localhost:8000/ws";
   } else {
-    websocketString=`wss://${window.location.hostname}/ws`
+    websocketString = `wss://${window.location.hostname}/ws`
   }
-
+ 
   var ws = new WebSocket(websocketString);
-
+ 
   var sendButton = document.getElementById("sendButton");
+  var newChatButton = document.getElementById("newChatButton");
+  var chatSessionSelector = document.getElementById("chatSessionSelector");
   var userInput = document.getElementById("userInput");
   var chatHistory = document.getElementById("chatHistory");
   var lastUserMessageDiv = null; // Keep track of the last user message div
   var isNewUserInput = true; // Flag to track when a new user input happens
-
+ 
+  var currentSessionKey = 'currentChatSession';
+  var sessionListKey = 'chatSessionList';
+ 
+  // Load chat history from localStorage on page load
+  window.onload = function() {
+    loadChatSessions();
+    loadChatHistory();
+  };
+ 
+  function loadChatSessions() {
+    var sessionList = JSON.parse(localStorage.getItem(sessionListKey)) || [];
+    chatSessionSelector.innerHTML = '<option value="" disabled selected>Select a chat session</option>';
+    
+    sessionList.forEach(function(sessionKey) {
+      var option = document.createElement("option");
+      option.value = sessionKey;
+      option.textContent = `Session ${sessionKey.split('_')[1]}`;
+      chatSessionSelector.appendChild(option);
+    });
+  }
+ 
+  function loadChatHistory(sessionKey) {
+    var sessionToLoad = sessionKey || localStorage.getItem(currentSessionKey);
+    if (sessionToLoad) {
+      chatHistory.innerHTML = localStorage.getItem(sessionToLoad) || "";
+    }
+  }
+ 
+  function saveChatHistory() {
+    var currentSession = localStorage.getItem(currentSessionKey);
+    if (currentSession) {
+      localStorage.setItem(currentSession, chatHistory.innerHTML);
+    }
+  }
+ 
+  function createNewChatSession() {
+    var sessionList = JSON.parse(localStorage.getItem(sessionListKey)) || [];
+    var newSessionKey = `chatSession_${Date.now()}`;
+    
+    // Save current chat history if there is any
+    if (localStorage.getItem(currentSessionKey)) {
+      saveChatHistory();
+    }
+    
+    // Add new session key to the list
+    sessionList.push(newSessionKey);
+    localStorage.setItem(sessionListKey, JSON.stringify(sessionList));
+    
+    // Set the new session as the current session
+    localStorage.setItem(currentSessionKey, newSessionKey);
+    
+    // Clear chat area for new chat session
+    chatHistory.innerHTML = "";
+    loadChatSessions();
+  }
+ 
+  chatSessionSelector.onchange = function() {
+    saveChatHistory(); // Save the current session before switching
+    var selectedSession = this.value;
+    localStorage.setItem(currentSessionKey, selectedSession); // Set the selected session as the current one
+    loadChatHistory(selectedSession); // Load the selected session's chat history
+  };
+ 
   ws.onmessage = function(event) {
     var message = event.data.trim(); // Trim whitespace from the message
-
+ 
     // Check if it's a continuation of the AI's last message or a new one
     if (lastUserMessageDiv && !isNewUserInput) {
       var shouldAddSpace = true;
       var noPrependSpaceChars = [',', '.', '!', '?', ';', ':', "'"];
-
+ 
       if (noPrependSpaceChars.includes(message.charAt(0))) {
-          shouldAddSpace = false;
+        shouldAddSpace = false;
       }
-
+ 
       lastUserMessageDiv.textContent += (shouldAddSpace ? " " : "") + message;
     } else {
-      // It's either a new user input or the first chunk of AI response for the latest input
+      // Format the AI's response as bullet points, numbered lists, and paragraphs
       var messageDiv = document.createElement("div");
       messageDiv.className = "chat-message ai-response"; // Assign class for styling
-      messageDiv.textContent = message;
+ 
+      var lines = message.split('\n');
+      lines.forEach(line => {
+        if (line.trim() !== "") {
+          var listItem;
+          if (line.startsWith('* ')) {
+            // Handle bullet points
+            listItem = document.createElement("li");
+            listItem.textContent = line.substring(2); // Remove the '* ' prefix
+            var ul = document.createElement("ul");
+            ul.appendChild(listItem);
+            messageDiv.appendChild(ul);
+          } else if (/^\d+\.\s/.test(line)) {
+            // Handle numbered lists
+            listItem = document.createElement("li");
+            listItem.textContent = line.replace(/^\d+\.\s/, ''); // Remove the number prefix
+            var ol = document.createElement("ol");
+            ol.appendChild(listItem);
+            messageDiv.appendChild(ol);
+          } else {
+            // Handle plain text paragraphs
+            var p = document.createElement("p");
+            p.textContent = line;
+            messageDiv.appendChild(p);
+          }
+        }
+      });
       chatHistory.appendChild(messageDiv);
       lastUserMessageDiv = messageDiv; // Update the reference to the last message div
       isNewUserInput = false; // Reset the flag as the AI response starts
     }
+ 
+    saveChatHistory(); // Save chat history after receiving a message
   };
-
+ 
   sendButton.onclick = function() {
     var message = userInput.value.trim();
     if (message) {
@@ -79,13 +176,20 @@
       userInputDiv.className = "chat-message user-input"; // Use user-input class for user messages
       userInputDiv.textContent = message;
       chatHistory.appendChild(userInputDiv);
-
+ 
       chatHistory.scrollTop = chatHistory.scrollHeight;
-
+ 
       ws.send(message);
       userInput.value = "";
+ 
       isNewUserInput = true; // Set the flag as it's a new user input
       lastUserMessageDiv = null; // Prepare for the next message
+ 
+      saveChatHistory(); // Save chat history after sending a message
     }
+  };
+ 
+  newChatButton.onclick = function() {
+    createNewChatSession(); // Start a new chat session while saving the old one
   };
 </script>

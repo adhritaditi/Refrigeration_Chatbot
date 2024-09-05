@@ -111,7 +111,7 @@ async def chat(websocket: WebSocket):
         chat_responses.append(user_input)
  
         try:
-response = openai.chat.completions.create(
+            response = openai.chat.completions.create(
                 model='gpt-3.5-turbo',
                 messages=chat_log,
                 temperature=0.6,
@@ -139,7 +139,7 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     chat_log.append({'role': 'user', 'content': user_input})
     chat_responses.append(user_input)
  
-response = openai.chat.completions.create(
+    response = openai.chat.completions.create(
         model='gpt-4',
         messages=chat_log,
         temperature=0.6

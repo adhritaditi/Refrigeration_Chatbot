@@ -1,5 +1,5 @@
 from openai import OpenAI
-from fastapi import FastAPI, Form, Request, WebSocket
+from fastapi import FastAPI, Form, Request, WebSocket, UploadFile
 from typing import Annotated
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -7,6 +7,9 @@ from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
 from docx import Document
+import pandas as pd
+import fitz  # PyMuPDF to read PDF
+from io import BytesIO
  
 # Load environment variables from .env file
 load_dotenv()
@@ -28,14 +31,16 @@ templates = Jinja2Templates(directory="templates1")
 chat_responses = []
  
 def load_chat_log_from_docx(file_path):
-    """Load chat log from a Word document, handling various formats."""
+    """Load text and tables from a Word document."""
     doc = Document(file_path)
     chat_log = []
  
+    # Extract text from paragraphs
     for para in doc.paragraphs:
         if para.text.strip():
             chat_log.append({'role': 'user', 'content': para.text.strip()})
  
+    # Extract text from tables
     for table in doc.tables:
         for row in table.rows:
             row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
@@ -44,23 +49,51 @@ def load_chat_log_from_docx(file_path):
  
     return chat_log
  
-# Load the initial chat log from the Word document in the templates1 folder
-chat_log = load_chat_log_from_docx("templates1/Bank.docx")
+def load_chat_log_from_excel(file_path):
+    """Load chat log by reading all worksheets from an Excel file."""
+    chat_log = []
+    excel_file = pd.ExcelFile(file_path)
  
-def trim_chat_log(log, max_tokens=2000):
-    """Trim the chat log to stay within a certain token limit."""
-    trimmed_log = []
-    token_count = 0
+    for sheet_name in excel_file.sheet_names:
+        df = pd.read_excel(excel_file, sheet_name=sheet_name)
+        for row in df.itertuples(index=False):
+            row_text = ' | '.join(map(str, row))
+            chat_log.append({'role': 'user', 'content': row_text})
  
-    # Reverse the log to start from the most recent messages
-    for entry in reversed(log):
-        entry_tokens = len(entry['content'].split())
-        if token_count + entry_tokens > max_tokens:
-            break
-        trimmed_log.insert(0, entry)  # Insert at the beginning
-        token_count += entry_tokens
+    return chat_log
  
-    return trimmed_log
+def load_chat_log_from_pdf(file_path):
+    """Load chat log from a PDF file."""
+    chat_log = []
+    pdf_document = fitz.open(file_path)
+ 
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text = page.get_text("text")
+        if text.strip():
+            chat_log.append({'role': 'user', 'content': text.strip()})
+ 
+    return chat_log
+ 
+def load_chat_logs_from_folder(folder_path):
+    """Load chat logs by reading from all Word, Excel, and PDF files in a folder."""
+    chat_log = []
+ 
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        extension = filename.split('.')[-1].lower()
+ 
+        if extension == 'docx':
+            chat_log.extend(load_chat_log_from_docx(file_path))
+        elif extension == 'xlsx':
+            chat_log.extend(load_chat_log_from_excel(file_path))
+        elif extension == 'pdf':
+            chat_log.extend(load_chat_log_from_pdf(file_path))
+ 
+    return chat_log
+ 
+# Load the initial chat log from all files in the "templates1" folder
+chat_log = load_chat_logs_from_folder("templates1/")
  
 @app.get("/", response_class=HTMLResponse)
 async def chat_page(request: Request):
@@ -77,13 +110,10 @@ async def chat(websocket: WebSocket):
         chat_log.append({'role': 'user', 'content': user_input})
         chat_responses.append(user_input)
  
-        # Trim the chat log to avoid exceeding the context length
-        trimmed_chat_log = trim_chat_log(chat_log)
- 
         try:
-            response = openai.chat.completions.create(
+response = openai.chat.completions.create(
                 model='gpt-3.5-turbo',
-                messages=trimmed_chat_log,
+                messages=chat_log,
                 temperature=0.6,
                 stream=True
             )
@@ -95,6 +125,7 @@ async def chat(websocket: WebSocket):
                     ai_response += chunk.choices[0].delta.content
                     await websocket.send_text(chunk.choices[0].delta.content)
  
+            # Append AI response to the log in sentence format
             chat_log.append({'role': 'assistant', 'content': ai_response})
             chat_responses.append(ai_response)
  
@@ -108,12 +139,9 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     chat_log.append({'role': 'user', 'content': user_input})
     chat_responses.append(user_input)
  
-    # Trim the chat log to avoid exceeding the context length
-    trimmed_chat_log = trim_chat_log(chat_log)
- 
-    response = openai.chat.completions.create(
+response = openai.chat.completions.create(
         model='gpt-4',
-        messages=trimmed_chat_log,
+        messages=chat_log,
         temperature=0.6
     )
  
@@ -124,19 +152,14 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     # Ensure the response is a coherent sentence
     return templates.TemplateResponse("home.html", {"request": request, "chat_responses": chat_responses})
  
-@app.get("/image", response_class=HTMLResponse)
-async def image_page(request: Request):
-    """Serve the image generation page."""
-    return templates.TemplateResponse("image.html", {"request": request})
+@app.post("/upload", response_class=HTMLResponse)
+async def upload_file(request: Request, file: UploadFile):
+    """Handle file uploads (Word, Excel, PDF) and load chat logs."""
+    file_location = f"templates1/{file.filename}"
+    with open(file_location, "wb+") as file_object:
+        file_object.write(file.file.read())
  
-@app.post("/image", response_class=HTMLResponse)
-async def create_image(request: Request, user_input: Annotated[str, Form()]):
-    """Handle image generation requests."""
-    response = openai.images.generate(
-        prompt=user_input,
-        n=1,
-        size="256x256"
-    )
+    # Reload chat logs from all files in the templates1 folder after upload
+    chat_log.extend(load_chat_logs_from_folder("templates1/"))
  
-    image_url = response.data[0].url
-    return templates.TemplateResponse("image.html", {"request": request, "image_url": image_url})
+    return templates.TemplateResponse("home.html", {"request": request, "chat_responses": chat_responses})

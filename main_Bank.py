@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF to read PDF
+from openpyxl import load_workbook  # For better Excel handling
 import logging
  
 # Load environment variables from .env file
@@ -18,9 +19,6 @@ load_dotenv()
 openai = OpenAI(
     api_key=os.getenv('OPENAI_API_SECRET_KEY')
 )
- 
-# Set up logging for debugging purposes
-logging.basicConfig(level=logging.INFO)
  
 # Create FastAPI app
 app = FastAPI()
@@ -34,17 +32,16 @@ templates = Jinja2Templates(directory="templates1")
 chat_responses = []
  
 def load_chat_log_from_docx(file_path):
-    """Load text and tables from a Word document with improved handling."""
+    """Load text and tables from a Word document."""
     doc = Document(file_path)
     chat_log = []
  
-    # Extract text from paragraphs, skipping headers/footers
+    # Extract text from paragraphs
     for para in doc.paragraphs:
-        text = para.text.strip()
-        if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
-            chat_log.append({'role': 'user', 'content': text})
+        if para.text.strip():
+            chat_log.append({'role': 'user', 'content': para.text.strip()})
  
-    # Extract text from tables, including nested tables
+    # Extract text from tables
     for table in doc.tables:
         for row in table.rows:
             row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
@@ -54,30 +51,37 @@ def load_chat_log_from_docx(file_path):
     return chat_log
  
 def load_chat_log_from_excel(file_path):
-    """Load chat log by reading all worksheets from an Excel file, handling NaN and merged cells."""
+    """Load chat log by reading all worksheets from an Excel file, handling NaN, merged cells, and special formatting."""
     chat_log = []
     try:
-        excel_file = pd.ExcelFile(file_path)
-        for sheet_name in excel_file.sheet_names:
-            df = pd.read_excel(excel_file, sheet_name=sheet_name, engine='openpyxl')
+        # Load the workbook using openpyxl for more control over formatting and merged cells
+        workbook = load_workbook(file_path, data_only=True)
+        logging.info(f"Successfully opened Excel file: {file_path}")
  
-            # Log sheet name
-            logging.info(f'Reading sheet: {sheet_name}')
-            
-            # Replace NaN values with empty strings
-            df.fillna('', inplace=True)
-            
-            for row in df.itertuples(index=False):
+        # Iterate through each sheet in the workbook
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+            logging.info(f"Reading sheet: {sheet_name}")
+ 
+            # Get rows and columns, ignoring completely empty rows
+            for row in sheet.iter_rows(values_only=True):
                 row_texts = []
                 for cell in row:
-                    if isinstance(cell, str):
-                        # Handle multi-line text in Excel cells
-                        cell = cell.replace('\n', ' ')
-                    row_texts.append(str(cell))
-                
-                row_text = ' | '.join(row_texts)
-                chat_log.append({'role': 'user', 'content': row_text})
+                    if cell is None:
+                        cell = ''  # Replace None with an empty string
+                    else:
+                        # Convert non-string data to string, and handle multi-line text
+                        if isinstance(cell, str):
+                            cell = cell.replace('\n', ' ').strip()  # Handle multi-line text
+                        row_texts.append(str(cell))
  
+                # If row has any content, append to chat log
+                if any(row_texts):
+                    row_text = ' | '.join(row_texts)
+                    chat_log.append({'role': 'user', 'content': row_text})
+ 
+    except FileNotFoundError as fnf_error:
+        logging.error(f"Excel file not found: {fnf_error}")
     except Exception as e:
         logging.error(f"Error reading Excel file {file_path}: {e}")
  
@@ -86,22 +90,20 @@ def load_chat_log_from_excel(file_path):
 def load_chat_log_from_pdf(file_path):
     """Load chat log from a PDF file."""
     chat_log = []
-    try:
-        pdf_document = fitz.open(file_path)
-        for page_num in range(len(pdf_document)):
-            page = pdf_document.load_page(page_num)
-            text = page.get_text("text")
-            if text.strip():
-                chat_log.append({'role': 'user', 'content': text.strip()})
+    pdf_document = fitz.open(file_path)
  
-    except Exception as e:
-        logging.error(f"Error reading PDF file {file_path}: {e}")
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text = page.get_text("text")
+        if text.strip():
+            chat_log.append({'role': 'user', 'content': text.strip()})
  
     return chat_log
  
 def load_chat_logs_from_folder(folder_path):
     """Load chat logs by reading from all Word, Excel, and PDF files in a folder."""
     chat_log = []
+ 
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
         extension = filename.split('.')[-1].lower()
@@ -172,6 +174,7 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     chat_log.append({'role': 'assistant', 'content': bot_response})
     chat_responses.append(bot_response)
  
+    # Ensure the response is a coherent sentence
     return templates.TemplateResponse("home.html", {"request": request, "chat_responses": chat_responses})
  
 @app.post("/upload", response_class=HTMLResponse)

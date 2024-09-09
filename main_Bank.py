@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF to read PDF
-from io import BytesIO
+import logging
  
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +18,9 @@ load_dotenv()
 openai = OpenAI(
     api_key=os.getenv('OPENAI_API_SECRET_KEY')
 )
+ 
+# Set up logging for debugging purposes
+logging.basicConfig(level=logging.INFO)
  
 # Create FastAPI app
 app = FastAPI()
@@ -31,16 +34,17 @@ templates = Jinja2Templates(directory="templates1")
 chat_responses = []
  
 def load_chat_log_from_docx(file_path):
-    """Load text and tables from a Word document."""
+    """Load text and tables from a Word document with improved handling."""
     doc = Document(file_path)
     chat_log = []
  
-    # Extract text from paragraphs
+    # Extract text from paragraphs, skipping headers/footers
     for para in doc.paragraphs:
-        if para.text.strip():
-            chat_log.append({'role': 'user', 'content': para.text.strip()})
+        text = para.text.strip()
+if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
+            chat_log.append({'role': 'user', 'content': text})
  
-    # Extract text from tables
+    # Extract text from tables, including nested tables
     for table in doc.tables:
         for row in table.rows:
             row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
@@ -50,35 +54,54 @@ def load_chat_log_from_docx(file_path):
     return chat_log
  
 def load_chat_log_from_excel(file_path):
-    """Load chat log by reading all worksheets from an Excel file."""
+    """Load chat log by reading all worksheets from an Excel file, handling NaN and merged cells."""
     chat_log = []
-    excel_file = pd.ExcelFile(file_path)
+    try:
+        excel_file = pd.ExcelFile(file_path)
+        for sheet_name in excel_file.sheet_names:
+            df = pd.read_excel(excel_file, sheet_name=sheet_name, engine='openpyxl')
  
-    for sheet_name in excel_file.sheet_names:
-        df = pd.read_excel(excel_file, sheet_name=sheet_name)
-        for row in df.itertuples(index=False):
-            row_text = ' | '.join(map(str, row))
-            chat_log.append({'role': 'user', 'content': row_text})
+            # Log sheet name
+logging.info(f'Reading sheet: {sheet_name}')
+            
+            # Replace NaN values with empty strings
+            df.fillna('', inplace=True)
+            
+            for row in df.itertuples(index=False):
+                row_texts = []
+                for cell in row:
+                    if isinstance(cell, str):
+                        # Handle multi-line text in Excel cells
+                        cell = cell.replace('\n', ' ')
+                    row_texts.append(str(cell))
+                
+                row_text = ' | '.join(row_texts)
+                chat_log.append({'role': 'user', 'content': row_text})
+ 
+    except Exception as e:
+        logging.error(f"Error reading Excel file {file_path}: {e}")
  
     return chat_log
  
 def load_chat_log_from_pdf(file_path):
     """Load chat log from a PDF file."""
     chat_log = []
-    pdf_document = fitz.open(file_path)
+    try:
+        pdf_document = fitz.open(file_path)
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            text = page.get_text("text")
+            if text.strip():
+                chat_log.append({'role': 'user', 'content': text.strip()})
  
-    for page_num in range(len(pdf_document)):
-        page = pdf_document.load_page(page_num)
-        text = page.get_text("text")
-        if text.strip():
-            chat_log.append({'role': 'user', 'content': text.strip()})
+    except Exception as e:
+        logging.error(f"Error reading PDF file {file_path}: {e}")
  
     return chat_log
  
 def load_chat_logs_from_folder(folder_path):
     """Load chat logs by reading from all Word, Excel, and PDF files in a folder."""
     chat_log = []
- 
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
         extension = filename.split('.')[-1].lower()
@@ -149,7 +172,6 @@ async def chat(request: Request, user_input: Annotated[str, Form()]):
     chat_log.append({'role': 'assistant', 'content': bot_response})
     chat_responses.append(bot_response)
  
-    # Ensure the response is a coherent sentence
     return templates.TemplateResponse("home.html", {"request": request, "chat_responses": chat_responses})
  
 @app.post("/upload", response_class=HTMLResponse)

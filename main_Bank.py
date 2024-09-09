@@ -41,16 +41,15 @@ def load_chat_log_from_docx(file_path):
     # Extract text from paragraphs, skipping headers/footers
     for para in doc.paragraphs:
         text = para.text.strip()
-        if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
- 
- chat_log.append({'role': 'user', 'content': text})
+if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
+            chat_log.append({'role': 'user', 'content': text})
  
     # Extract text from tables, including nested tables
     for table in doc.tables:
         for row in table.rows:
             row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
             if row_text:
- chat_log.append({'role': 'user', 'content': row_text})
+                chat_log.append({'role': 'user', 'content': row_text})
  
     return chat_log
  
@@ -77,7 +76,7 @@ logging.info(f'Reading sheet: {sheet_name}')
                     row_texts.append(str(cell))
                 
                 row_text = ' | '.join(row_texts)
-chat_log.append({'role': 'user', 'content': row_text})
+                chat_log.append({'role': 'user', 'content': row_text})
  
     except Exception as e:
         logging.error(f"Error reading Excel file {file_path}: {e}")

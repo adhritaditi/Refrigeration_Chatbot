@@ -41,7 +41,7 @@ def load_chat_log_from_docx(file_path):
     # Extract text from paragraphs, skipping headers/footers
     for para in doc.paragraphs:
         text = para.text.strip()
-if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
+        if text and not para.style.name.startswith('Header') and not para.style.name.startswith('Footer'):
             chat_log.append({'role': 'user', 'content': text})
  
     # Extract text from tables, including nested tables

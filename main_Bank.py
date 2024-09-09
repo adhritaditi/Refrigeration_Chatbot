@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF to read PDF
-from openpyxl import load_workbook  # For better Excel handling
+from io import BytesIO
+from openpyxl import load_workbook  # For handling merged cells in Excel
 import logging
  
 # Load environment variables from .env file
@@ -54,7 +55,7 @@ def load_chat_log_from_excel(file_path):
     """Load chat log by reading all worksheets from an Excel file, handling NaN, merged cells, and special formatting."""
     chat_log = []
     try:
-        # Load the workbook using openpyxl for more control over formatting and merged cells
+        # Load the workbook using openpyxl for better handling of merged cells
         workbook = load_workbook(file_path, data_only=True)
         logging.info(f"Successfully opened Excel file: {file_path}")
  
@@ -63,17 +64,28 @@ def load_chat_log_from_excel(file_path):
             sheet = workbook[sheet_name]
             logging.info(f"Reading sheet: {sheet_name}")
  
-            # Get rows and columns, ignoring completely empty rows
-            for row in sheet.iter_rows(values_only=True):
+            # Get merged cell ranges
+            merged_cells = sheet.merged_cells.ranges
+ 
+            # Get rows and columns, and resolve merged cells
+            for row in sheet.iter_rows(values_only=False):
                 row_texts = []
                 for cell in row:
-                    if cell is None:
-                        cell = ''  # Replace None with an empty string
+                    if cell.coordinate in merged_cells:
+                        # Find the merged cell range and get the top-left value
+                        for merged_range in merged_cells:
+                            if cell.coordinate in merged_range:
+                                cell = sheet[merged_range.min_row][merged_range.min_col - 1]
+                                break
+                    cell_value = cell.value
+ 
+                    if cell_value is None:
+                        cell_value = ''  # Replace None with an empty string
                     else:
                         # Convert non-string data to string, and handle multi-line text
-                        if isinstance(cell, str):
-                            cell = cell.replace('\n', ' ').strip()  # Handle multi-line text
-                        row_texts.append(str(cell))
+                        if isinstance(cell_value, str):
+                            cell_value = cell_value.replace('\n', ' ').strip()  # Handle multi-line text
+                        row_texts.append(str(cell_value))
  
                 # If row has any content, append to chat log
                 if any(row_texts):

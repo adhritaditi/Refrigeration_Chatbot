@@ -62,7 +62,7 @@ def load_chat_log_from_excel(file_path):
             df = pd.read_excel(excel_file, sheet_name=sheet_name, engine='openpyxl')
  
             # Log sheet name
-logging.info(f'Reading sheet: {sheet_name}')
+            logging.info(f'Reading sheet: {sheet_name}')
             
             # Replace NaN values with empty strings
             df.fillna('', inplace=True)

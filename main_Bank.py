@@ -154,8 +154,11 @@ async def load_chat_logs_from_folder(folder_path, batch_size=10):
  
     return chat_log
  
-# Load the initial chat log from all files in the "templates1" folder
-chat_log = asyncio.run(load_chat_logs_from_folder("templates1/"))
+# Use an async startup event to ensure the function is awaited properly
+@app.on_event("startup")
+async def startup_event():
+    global chat_log
+    chat_log = await load_chat_logs_from_folder("templates1/")
  
 @app.get("/", response_class=HTMLResponse)
 async def chat_page(request: Request):

@@ -7,11 +7,10 @@ from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
 from docx import Document
-import pandas as pd
 import fitz  # PyMuPDF to read PDF
-from io import BytesIO
 from openpyxl import load_workbook  # For handling merged cells in Excel
 import logging
+import asyncio  # To handle asynchronous file processing
  
 # Load environment variables from .env file
 load_dotenv()
@@ -52,45 +51,49 @@ def load_chat_log_from_docx(file_path):
     return chat_log
  
 def load_chat_log_from_excel(file_path):
-    """Load chat log by reading all worksheets from an Excel file, handling NaN, merged cells, and special formatting."""
+    """Load chat log by reading all worksheets from an Excel file, handling merged cells and preserving table structure."""
     chat_log = []
     try:
-        # Load the workbook using openpyxl for better handling of merged cells
+        # Load the workbook and access each sheet using openpyxl
         workbook = load_workbook(file_path, data_only=True)
-        logging.info(f"Successfully opened Excel file: {file_path}")
- 
+        
         # Iterate through each sheet in the workbook
         for sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
-            logging.info(f"Reading sheet: {sheet_name}")
- 
-            # Get merged cell ranges
-            merged_cells = sheet.merged_cells.ranges
- 
-            # Get rows and columns, and resolve merged cells
+            sheet_log = []
+            
+            # Read the data as a table row by row
             for row in sheet.iter_rows(values_only=False):
-                row_texts = []
+                row_data = []
+                
                 for cell in row:
-                    if cell.coordinate in merged_cells:
-                        # Find the merged cell range and get the top-left value
-                        for merged_range in merged_cells:
+                    cell_value = None
+                    # If the cell is merged, get the value from the top-left cell of the merge range
+                    if cell.merged_cell:
+                        # Find the correct merged cell range
+                        for merged_range in sheet.merged_cells.ranges:
                             if cell.coordinate in merged_range:
-                                cell = sheet[merged_range.min_row][merged_range.min_col - 1]
+                                # Take the value from the top-left cell of the merged range
+                                merged_cell = sheet[merged_range.min_row][merged_range.min_col - 1]
+                                cell_value = merged_cell.value
                                 break
-                    cell_value = cell.value
+                    else:
+                        cell_value = cell.value
  
                     if cell_value is None:
-                        cell_value = ''  # Replace None with an empty string
+                        cell_value = ''  # Replace None values with an empty string
                     else:
-                        # Convert non-string data to string, and handle multi-line text
-                        if isinstance(cell_value, str):
-                            cell_value = cell_value.replace('\n', ' ').strip()  # Handle multi-line text
-                        row_texts.append(str(cell_value))
+                        cell_value = str(cell_value).strip()  # Convert to string and strip extra whitespace
+                    
+                    row_data.append(cell_value)
  
-                # If row has any content, append to chat log
-                if any(row_texts):
-                    row_text = ' | '.join(row_texts)
-                    chat_log.append({'role': 'user', 'content': row_text})
+                # Only add non-empty rows to the chat log
+                if any(row_data):
+                    row_text = ' | '.join(row_data)
+                    sheet_log.append({'role': 'user', 'content': row_text})
+ 
+            if sheet_log:
+                chat_log.extend(sheet_log)
  
     except FileNotFoundError as fnf_error:
         logging.error(f"Excel file not found: {fnf_error}")
@@ -99,22 +102,30 @@ def load_chat_log_from_excel(file_path):
  
     return chat_log
  
-def load_chat_log_from_pdf(file_path):
-    """Load chat log from a PDF file."""
+async def load_chat_log_from_pdf(file_path):
+    """Load chat log from a PDF file asynchronously."""
     chat_log = []
-    pdf_document = fitz.open(file_path)
+    try:
+        pdf_document = fitz.open(file_path)
  
-    for page_num in range(len(pdf_document)):
-        page = pdf_document.load_page(page_num)
-        text = page.get_text("text")
-        if text.strip():
-            chat_log.append({'role': 'user', 'content': text.strip()})
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            text = page.get_text("text")
+            if text.strip():
+                chat_log.append({'role': 'user', 'content': text.strip()})
+ 
+        # Close the document after processing
+        pdf_document.close()
+ 
+    except Exception as e:
+        logging.error(f"Error reading PDF file {file_path}: {e}")
  
     return chat_log
  
-def load_chat_logs_from_folder(folder_path):
-    """Load chat logs by reading from all Word, Excel, and PDF files in a folder."""
+async def load_chat_logs_from_folder(folder_path, batch_size=10):
+    """Load chat logs by reading from all Word, Excel, and PDF files in a folder with batch processing."""
     chat_log = []
+    pdf_tasks = []
  
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
@@ -125,12 +136,26 @@ def load_chat_logs_from_folder(folder_path):
         elif extension == 'xlsx':
             chat_log.extend(load_chat_log_from_excel(file_path))
         elif extension == 'pdf':
-            chat_log.extend(load_chat_log_from_pdf(file_path))
+            # For PDF files, create asynchronous tasks and process them in batches
+            pdf_tasks.append(load_chat_log_from_pdf(file_path))
+ 
+            # Process tasks in batches
+            if len(pdf_tasks) == batch_size:
+                results = await asyncio.gather(*pdf_tasks)
+                for result in results:
+                    chat_log.extend(result)
+                pdf_tasks = []
+ 
+    # Process remaining PDF tasks
+    if pdf_tasks:
+        results = await asyncio.gather(*pdf_tasks)
+        for result in results:
+            chat_log.extend(result)
  
     return chat_log
  
 # Load the initial chat log from all files in the "templates1" folder
-chat_log = load_chat_logs_from_folder("templates1/")
+chat_log = asyncio.run(load_chat_logs_from_folder("templates1/"))
  
 @app.get("/", response_class=HTMLResponse)
 async def chat_page(request: Request):
@@ -197,6 +222,6 @@ async def upload_file(request: Request, file: UploadFile):
         file_object.write(file.file.read())
  
     # Reload chat logs from all files in the templates1 folder after upload
-    chat_log.extend(load_chat_logs_from_folder("templates1/"))
+    chat_log.extend(await load_chat_logs_from_folder("templates1/"))
  
     return templates.TemplateResponse("home.html", {"request": request, "chat_responses": chat_responses})
